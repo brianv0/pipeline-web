@@ -127,52 +127,30 @@
                     <sql:param value="${task}"/>
                 </sql:query>
                 <sql:query var="test">
-                    WITH 
-                        task_tree (task, parenttask, taskname, version, revision, lev) AS
-                        ( SELECT task, parenttask, taskname, version, revision, 0 FROM task WHERE task = ?
+                    WITH
+                        task_stream_tree (task, parenttask, taskname, version, revision, stream, parentstream, streamstatus, rootstream, lev) AS
+                        ( SELECT task.task, parenttask, taskname, version, revision, stream, parentstream, streamstatus, rootstream, 0
+                            FROM task
+                            join stream on (stream.task = task.task)
+                            WHERE task.task = 316643563 and islatest=1
                           UNION ALL
-                          SELECT jt.task, jt.parenttask, jt.taskname, jt.version, jt.revision, tt.lev+1
-                            FROM task_tree tt
+                          SELECT jt.task, jt.parenttask, jt.taskname, jt.version, jt.revision, st.stream, st.parentstream, st.streamstatus, st.rootstream, tt.lev+1
+                            FROM task_stream_tree tt
                             JOIN task jt ON (tt.task = jt.parenttask)
-                        ),
-                        streams0 (stream, parentstream, rootstream, task, islatest, lev) as (
-                            select stream, parentstream, rootstream, task, islatest, 0
-                            FROM stream
-                            where islatest = 1 and task in (select task from task_tree where lev = 0)
+                            JOIN stream st ON (jt.task = st.task)
+                            WHERE st.parentstream = tt.stream and st.rootstream = tt.rootstream and st.islatest = 1
                         )
-                        <c:set var="maxLevel" value="0"/>
-                        <c:if test="${taskLevels.rowCount>0}">
-                        ,
-                        <c:forEach var="row" items="${taskLevels.rows}" varStatus="loop">
-                        <c:set var="taskLevel" value="${row.LEV}" />
-                        streams${taskLevel} (stream, parentstream, rootstream, task, islatest, lev) AS (
-                            select * from streams${taskLevel-1}
-                            union all
-                            select s.stream, s.parentstream, s.rootstream, s.task, s.islatest, ${taskLevel}
-                            from task_tree t
-                            JOIN stream s on (t.task = s.task)
-                            JOIN streams${taskLevel-1} rs on (s.rootstream = rs.rootstream and s.parentstream = rs.stream)
-                            where t.lev = ${taskLevel} and rs.lev = ${taskLevel-1} and s.islatest = 1
-                            )<c:choose>
-                            <c:when test="${!loop.last}">,</c:when>
-                            <c:when test="${loop.last}">
-                                <c:set var="maxLevel" value="${taskLevel}"/>
-                            </c:when>
-                            </c:choose>
-                        </c:forEach>
-                        </c:if>
-                    select   SUM(1) "ALL",
+                    select /*+ PARALLEL(8) */   SUM(1) "ALL",
                     <c:forEach var="row" items="${proc_stats.rows}">
                         SUM(case when PROCESSINGSTATUS='${row.PROCESSINGSTATUS}' then 1 else 0 end) "${row.PROCESSINGSTATUS}",                        
-                    </c:forEach>    
-                        lev, lpad(' ',1+24*(lev -1),'&nbsp;')|| tt.taskname  taskname, st.task, tt.version || '.' || tt.revision as version, Initcap(prt.ProcessType) type, prt.processname, pt.process, prt.displayorder
-                        FROM streams${maxLevel} st
-                        join processinstance pt on (pt.stream = st.stream)
-                        join task tt on (st.task = tt.task)
-                        join process prt on (pt.process = prt.process)
-                        where pt.islatest = 1
-                        GROUP BY lev, st.task, tt.taskname, tt.version, tt.revision, pt.process, prt.PROCESSNAME, prt.displayorder, prt.processtype
-                        ORDER BY st.task, pt.process
+                    </c:forEach>
+                    lev, lpad(' ',1+24*(lev -1),'&nbsp;')|| st.taskname taskname, st.task, st.version || '.' || st.revision as version, Initcap(prt.ProcessType) type, prt.processname, pt.process, prt.displayorder
+                    from task_stream_tree st
+                    join processinstance pt on (pt.stream = st.stream)
+                    join process prt on (pt.process = prt.process)
+                    where pt.islatest = 1
+                    GROUP BY lev, st.task, st.taskname, st.version, st.revision, pt.process, prt.PROCESSNAME, prt.displayorder, prt.processtype
+                    ORDER BY st.task, pt.process
                     <sql:param value="${task}"/>
                 </sql:query>
                 <display:table class="datatable" name="${test.rows}" id="tableRow" varTotals="totals"  decorator="org.srs.pipeline.web.decorators.ProcessDecorator">
