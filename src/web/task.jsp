@@ -114,33 +114,59 @@
                     &nbsp;<a href="process.jsp?task=${task}&status=0">[ALL]</a>                  
                     &nbsp;<a href="process.jsp?task=${task}&status=NOTSUCCESS">[All not SUCCESS]</a>
                 </p>
+                <sql:query var="taskLevels">
+                    WITH
+                        task_tree (task, parenttask, taskname, version, revision, lev) AS
+                        ( SELECT task, parenttask, taskname, version, revision, 0 FROM task WHERE task = ?
+                          UNION ALL
+                          SELECT jt.task, jt.parenttask, jt.taskname, jt.version, jt.revision, tt.lev+1
+                            FROM task_tree tt
+                            JOIN task jt ON (tt.task = jt.parenttask)
+                        )
+                    SELECT distinct lev from task_tree where lev > 0 order by lev asc
+                    <sql:param value="${task}"/>
+                </sql:query>
                 <sql:query var="test">
                     WITH 
-                        task_tree (task, parenttask, taskname, version, revision) AS 
-                        ( SELECT task, parenttask, taskname, version, revision FROM task WHERE task = ?
+                        task_tree (task, parenttask, taskname, version, revision, lev) AS
+                        ( SELECT task, parenttask, taskname, version, revision, 0 FROM task WHERE task = ?
                           UNION ALL
-                          SELECT jt.task, jt.parenttask, jt.taskname, jt.version, jt.revision
+                          SELECT jt.task, jt.parenttask, jt.taskname, jt.version, jt.revision, tt.lev+1
                             FROM task_tree tt
                             JOIN task jt ON (tt.task = jt.parenttask)
                         ),
-                        sst AS (SELECT stream, parentstream, streamstatus, task, islatest 
-                                  FROM stream WHERE task IN (select task from task_tree)), 
-                        stream_tree ( stream, parentstream, streamstatus, task, lev ) AS
-                        ( SELECT   stream, parentstream, streamstatus, task, 1
+                        streams0 (stream, parentstream, rootstream, task, islatest, lev) as (
+                            select stream, parentstream, rootstream, task, islatest, 0
                             FROM stream
-                            WHERE task = (select task from task_tree where parenttask = 0) AND islatest = 1
-                          UNION ALL
-                          SELECT   sst.stream, sst.parentstream, sst.streamstatus, sst.task, lev+1
-                            FROM stream_tree st
-                            JOIN sst ON (st.stream = sst.parentstream)
-                            WHERE islatest = 1
+                            where islatest = 1 and task in (select task from task_tree where lev = 0)
                         )
+                        <c:set var="maxLevel" value="0"/>
+                        <c:if test="${taskLevels.rowCount>0}">
+                        ,
+                        <c:forEach var="row" items="${taskLevels.rows}" varStatus="loop">
+                        <c:set var="taskLevel" value="${row.LEV}" />
+                        streams${taskLevel} (stream, parentstream, rootstream, task, islatest, lev) AS (
+                            select * from streams${taskLevel-1}
+                            union all
+                            select s.stream, s.parentstream, s.rootstream, s.task, s.islatest, ${taskLevel}
+                            from task_tree t
+                            JOIN stream s on (t.task = s.task)
+                            JOIN streams${taskLevel-1} rs on (s.rootstream = rs.rootstream and s.parentstream = rs.stream)
+                            where t.lev = ${taskLevel} and rs.lev = ${taskLevel-1} and s.islatest = 1
+                            )<c:choose>
+                            <c:when test="${!loop.last}">,</c:when>
+                            <c:when test="${loop.last}">
+                                <c:set var="maxLevel" value="${taskLevel}"/>
+                            </c:when>
+                            </c:choose>
+                        </c:forEach>
+                        </c:if>
                     select   SUM(1) "ALL",
                     <c:forEach var="row" items="${proc_stats.rows}">
                         SUM(case when PROCESSINGSTATUS='${row.PROCESSINGSTATUS}' then 1 else 0 end) "${row.PROCESSINGSTATUS}",                        
                     </c:forEach>    
                         lev, lpad(' ',1+24*(lev -1),'&nbsp;')|| tt.taskname  taskname, st.task, tt.version || '.' || tt.revision as version, Initcap(prt.ProcessType) type, prt.processname, pt.process, prt.displayorder
-                        FROM stream_tree st
+                        FROM streams${maxLevel} st
                         join processinstance pt on (pt.stream = st.stream)
                         join task tt on (st.task = tt.task)
                         join process prt on (pt.process = prt.process)
